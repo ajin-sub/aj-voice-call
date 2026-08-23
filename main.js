@@ -1,5 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
 import { getDatabase, ref, set, get, remove, onValue, off, onDisconnect } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-database.js";
+// ⬇️ 追加: Firebase Authentication
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 
 // Firebase 設定
 const firebaseConfig = {
@@ -16,6 +18,8 @@ const firebaseConfig = {
 // Firebase 初期化
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
+// ⬇️ 追加: Auth インスタンス
+const auth = getAuth(app);
 
 // グローバル変数
 let localStream = null;
@@ -80,13 +84,6 @@ function peerRecord() {
     };
 }
 
-function generatePeerId() {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-        return 'peer_' + crypto.randomUUID();
-    }
-    return 'peer_' + Math.random().toString(36).slice(2, 11);
-}
-
 function updateStatus(message, type = 'normal') {
     statusEl.textContent = message;
     statusEl.className = `status ${type}`;
@@ -104,6 +101,27 @@ async function startCall() {
         localDisplayName = name;
         displayNameInput.value = name;
 
+        updateStatus('認証中...', 'connecting');
+
+        // ⬇️ 追加: 匿名認証
+        try {
+            await signInAnonymously(auth);
+        } catch (authError) {
+            // 既に認証済みの場合はエラーになるので無視
+            if (authError.code !== 'auth/already-initialized') {
+                throw authError;
+            }
+        }
+
+        const user = auth.currentUser;
+        if (!user) {
+            throw new Error('認証に失敗しました');
+        }
+
+        // ⬇️ 変更: auth.uid を peerId として使用
+        localPeerId = user.uid;
+        console.log('認証成功! UID:', localPeerId);
+
         updateStatus('マイクへのアクセスを許可してください...', 'connecting');
 
         // マイクストリーム取得
@@ -117,26 +135,25 @@ async function startCall() {
         });
 
         isCallActive = true;
-        localPeerId = generatePeerId();
         updateStatus('通話ルームに参加中...', 'connecting');
 
-// Firebase に自分の情報を登録（myPeerRef を作る）
-const myPeerRef = ref(database, `peers/${localPeerId}`);
-await set(myPeerRef, peerRecord());
+        // Firebase に自分の情報を登録（myPeerRef を作る）
+        const myPeerRef = ref(database, `peers/${localPeerId}`);
+        await set(myPeerRef, peerRecord());
 
-// onDisconnect で自動削除（タブ落ち／ブラウザ落ち対策）
-try {
-  onDisconnectHandle = onDisconnect(myPeerRef);
-  await onDisconnectHandle.remove();
-} catch (e) {
-  console.warn('onDisconnect setup failed', e);
-  onDisconnectHandle = null;
-}
+        // onDisconnect で自動削除（タブ落ち／ブラウザ落ち対策）
+        try {
+            onDisconnectHandle = onDisconnect(myPeerRef);
+            await onDisconnectHandle.remove();
+        } catch (e) {
+            console.warn('onDisconnect setup failed', e);
+            onDisconnectHandle = null;
+        }
 
-// heartbeat（定期的に timestamp を更新）
-heartbeatTimer = setInterval(() => {
-  set(myPeerRef, peerRecord()).catch(e => console.warn('heartbeat failed', e));
-}, 10000); // 10秒ごと
+        // heartbeat（定期的に timestamp を更新）
+        heartbeatTimer = setInterval(() => {
+            set(myPeerRef, peerRecord()).catch(e => console.warn('heartbeat failed', e));
+        }, 10000); // 10秒ごと
 
         // 既存の参加者を監視
         monitorPeers();
@@ -160,7 +177,6 @@ async function endCall() {
         updateStatus('通話を終了中...', 'connecting');
 
         // 自分を peers から消す前に監視を止める。
-        // そうしないと「相手はまだ残っている」スナップショットで再接続してしまう。
         isCallActive = false;
         off(peersRef);
 
@@ -260,7 +276,7 @@ async function monitorPeers() {
             if (!peerConnections.has(peerId)) {
                 // deterministic initiator: 比較で一方のみ initiator=true にする
                 const initiator = localPeerId > peerId;
-                await createPeerConnection(peerId, initiator); // initiator may be true/false
+                await createPeerConnection(peerId, initiator);
             }
         }
 
@@ -365,7 +381,6 @@ async function createPeerConnection(peerId, initiator) {
         // リモートストリームを受け取る
         peerConnection.ontrack = (event) => {
             console.log('リモートストリーム受信:', peerId);
-            // audio 要素を作成して再生
             let audioEl = remoteAudios.get(peerId);
             if (!audioEl) {
                 audioEl = document.createElement('audio');
@@ -375,7 +390,6 @@ async function createPeerConnection(peerId, initiator) {
                 document.body.appendChild(audioEl);
                 remoteAudios.set(peerId, audioEl);
             }
-            // 一般的には event.streams[0] に音声が含まれる
             if (event.streams && event.streams[0]) {
                 audioEl.srcObject = event.streams[0];
             }
@@ -396,7 +410,6 @@ async function createPeerConnection(peerId, initiator) {
         };
 
         if (initiator) {
-            // Offer を作成して送信
             const offer = await peerConnection.createOffer();
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
             await peerConnection.setLocalDescription(offer);
@@ -415,7 +428,6 @@ async function createPeerConnection(peerId, initiator) {
             if (!offerData || !isCurrentPeerConnection(peerId, peerConnection)) return;
 
             const state = peerConnection.signalingState;
-            // 普通のケース: stable -> setRemote + createAnswer
             if (state === 'stable') {
                 try {
                     await peerConnection.setRemoteDescription({ type: 'offer', sdp: offerData.sdp });
@@ -434,27 +446,21 @@ async function createPeerConnection(peerId, initiator) {
                 return;
             }
 
-            // glare: 自分が既にローカルオファーを出している場合
             if (state === 'have-local-offer') {
-                // tie-breaker: localPeerId > peerId の一致したルールで決定
                 if (localPeerId > peerId) {
-                    // 自分のオファーを保持してリモートオファーを無視
                     console.log('Glare detected: keeping local offer for', peerId);
                     return;
                 } else {
-                    // 相手のオファーを受け入れる — rollback を試みる
                     try {
                         await peerConnection.setLocalDescription({ type: 'rollback' });
                     } catch (e) {
                         console.warn('Rollback unsupported or failed, recreating PeerConnection', e);
-                        // フォールバック: 現在の接続を破棄して再作成
                         cleanupPeer(peerId);
                         const pc = peerConnections.get(peerId);
                         if (pc) {
                             try { pc.close(); } catch (e) { /* noop */ }
                             peerConnections.delete(peerId);
                         }
-                        // 再作成して受け入れ側として処理
                         await createPeerConnection(peerId, false);
                         return;
                     }
@@ -516,7 +522,6 @@ async function createPeerConnection(peerId, initiator) {
 // ページ離脱時に通話を終了
 window.addEventListener('beforeunload', () => {
     if (isCallActive) {
-        // 非同期処理は完了を保証できないため fire-and-forget
         endCall();
     }
 });
