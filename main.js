@@ -91,6 +91,13 @@ function updateStatus(message, type = 'normal') {
 }
 
 async function startCall() {
+    // 本番環境の有無デバッグ
+    console.log('=== デバッグ情報 ===');
+    console.log('auth オブジェクト:', auth);
+    console.log('現在のユーザー:', auth.currentUser);
+    console.log('UID:', auth.currentUser?.uid);
+    console.log('===================');
+    
     try {
         const name = normalizeDisplayName(displayNameInput.value);
         if (!name) {
