@@ -1,6 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
 import { getDatabase, ref, set, get, remove, onValue, off, onDisconnect } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-database.js";
-import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 
 // Firebase 設定
 const firebaseConfig = {
@@ -17,17 +16,6 @@ const firebaseConfig = {
 // Firebase 初期化
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
-const auth = getAuth(app);
-
-// 匿名認証を初期化
-signInAnonymously(auth)
-    .then(() => {
-        console.log('匿名認証に成功しました');
-    })
-    .catch((error) => {
-        console.error('認証エラー:', error);
-        updateStatus(`認証エラー: ${error.message}`, 'error');
-    });
 
 // グローバル変数
 let localStream = null;
@@ -63,10 +51,16 @@ const startBtn = document.getElementById('startBtn');
 const endBtn = document.getElementById('endBtn');
 const peerListEl = document.getElementById('peerList');
 const peersEl = document.getElementById('peers');
+const displayNameInput = document.getElementById('displayName');
 
 // イベントリスナー
 startBtn.addEventListener('click', startCall);
 endBtn.addEventListener('click', endCall);
+displayNameInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !startBtn.disabled) {
+        startCall();
+    }
+});
 
 // ユーティリティ
 function normalizeDisplayName(raw) {
@@ -101,6 +95,15 @@ function updateStatus(message, type = 'normal') {
 
 async function startCall() {
     try {
+        const name = normalizeDisplayName(displayNameInput.value);
+        if (!name) {
+            updateStatus('参加する前に表示名を入力してください', 'error');
+            displayNameInput.focus();
+            return;
+        }
+        localDisplayName = name;
+        displayNameInput.value = name;
+
         updateStatus('マイクへのアクセスを許可してください...', 'connecting');
 
         // マイクストリーム取得
@@ -117,23 +120,23 @@ async function startCall() {
         localPeerId = generatePeerId();
         updateStatus('通話ルームに参加中...', 'connecting');
 
-        // Firebase に自分の情報を登録（myPeerRef を作る）
-        const myPeerRef = ref(database, `peers/${localPeerId}`);
-        await set(myPeerRef, peerRecord());
+// Firebase に自分の情報を登録（myPeerRef を作る）
+const myPeerRef = ref(database, `peers/${localPeerId}`);
+await set(myPeerRef, peerRecord());
 
-        // onDisconnect で自動削除（タブ落ち／ブラウザ落ち対策）
-        try {
-            onDisconnectHandle = onDisconnect(myPeerRef);
-            await onDisconnectHandle.remove();
-        } catch (e) {
-            console.warn('onDisconnect setup failed', e);
-            onDisconnectHandle = null;
-        }
+// onDisconnect で自動削除（タブ落ち／ブラウザ落ち対策）
+try {
+  onDisconnectHandle = onDisconnect(myPeerRef);
+  await onDisconnectHandle.remove();
+} catch (e) {
+  console.warn('onDisconnect setup failed', e);
+  onDisconnectHandle = null;
+}
 
-        // heartbeat（定期的に timestamp を更新）
-        heartbeatTimer = setInterval(() => {
-            set(myPeerRef, peerRecord()).catch(e => console.warn('heartbeat failed', e));
-        }, 10000); // 10秒ごと
+// heartbeat（定期的に timestamp を更新）
+heartbeatTimer = setInterval(() => {
+  set(myPeerRef, peerRecord()).catch(e => console.warn('heartbeat failed', e));
+}, 10000); // 10秒ごと
 
         // 既存の参加者を監視
         monitorPeers();
@@ -141,10 +144,13 @@ async function startCall() {
         // UI 更新
         startBtn.disabled = true;
         endBtn.disabled = false;
+        displayNameInput.disabled = true;
         updateStatus('通話待機中...接続を待っています', 'connected');
 
     } catch (error) {
         console.error('エラー:', error);
+        localDisplayName = '';
+        displayNameInput.disabled = false;
         updateStatus(`エラー: ${error.message}`, 'error');
     }
 }
@@ -200,6 +206,7 @@ async function endCall() {
         // UI 更新
         startBtn.disabled = false;
         endBtn.disabled = true;
+        displayNameInput.disabled = false;
         peerListEl.style.display = 'none';
         peersEl.innerHTML = '';
         updateStatus('通話を終了しました', 'normal');
@@ -241,11 +248,11 @@ async function monitorPeers() {
         const peers = snapshot.val() || {};
         // 自分以外で、かつ最近更新されたピアだけ表示する（PEER_TTL を参照）
         const peerIds = Object.entries(peers)
-            .filter(([id, data]) => id !== localPeerId && (Date.now() - (data.timestamp || 0) < PEER_TTL))
-            .map(([id, data]) => {
-                peerNames.set(id, normalizeDisplayName(data && data.name) || id.slice(0, 8));
-                return id;
-            });
+          .filter(([id, data]) => id !== localPeerId && (Date.now() - (data.timestamp || 0) < PEER_TTL))
+          .map(([id, data]) => {
+            peerNames.set(id, normalizeDisplayName(data && data.name) || id.slice(0, 8));
+            return id;
+          });
 
         // 接続していない新しいピアに接続
         for (const peerId of peerIds) {
