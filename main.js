@@ -429,6 +429,16 @@ async function createPeerConnection(peerId, initiator) {
             // デバッグログ用
             console.log(' Offer 作成完了');
 
+            // setLocalDescription が確実に完了するまで待つ
+            await peerConnection.setLocalDescription(offer);
+            console.log('🔵 setLocalDescription 完了, signalingState:', peerConnection.signalingState);
+    
+            // signalingState が 'have-local-offer' であることを確認
+            if (peerConnection.signalingState !== 'have-local-offer') {
+                console.error('❌ signalingState が異常:', peerConnection.signalingState);
+                throw new Error('setLocalDescription 後に signalingState が不正');
+            }
+
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
             await peerConnection.setLocalDescription(offer);
 
