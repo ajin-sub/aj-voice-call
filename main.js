@@ -374,6 +374,10 @@ async function createPeerConnection(peerId, initiator) {
 
         // ICE候補を処理
         peerConnection.onicecandidate = (event) => {
+            
+            //デバッグログ用
+            console.log(' ICE候補イベント:', event.candidate ? '候補あり' : 'null（収集完了）');
+            
             if (!event.candidate) return;
             if (!isCurrentPeerConnection(peerId, peerConnection) || !localPeerId) return;
             const candidateKey = Math.random().toString(36).slice(2);
@@ -417,15 +421,33 @@ async function createPeerConnection(peerId, initiator) {
         };
 
         if (initiator) {
+            // デバッグログ用
+            console.log(' Offer 作成開始 (initiator=true)');
+
             const offer = await peerConnection.createOffer();
+            
+            // デバッグログ用
+            console.log(' Offer 作成完了');
+
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
             await peerConnection.setLocalDescription(offer);
+
+            // デバッグログ用
+            console.log(' setLocalDescription 完了');
+
             if (!isCurrentPeerConnection(peerId, peerConnection) || !localPeerId) return;
+
+            // デバッグログ用
+            console.log(' Firebase に Offer を書き込み中...');
+
             await set(ref(database, `offers/${localPeerId}/${peerId}`), {
                 sdp: offer.sdp,
                 type: 'offer',
                 timestamp: Date.now()
             });
+
+            // デバッグログ用
+            console.log(' Offer 書き込み完了！');
         }
 
         // リモートピアからの Offer を監視
