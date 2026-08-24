@@ -429,16 +429,6 @@ async function createPeerConnection(peerId, initiator) {
             // デバッグログ用
             console.log(' Offer 作成完了');
 
-            // setLocalDescription が確実に完了するまで待つ
-            await peerConnection.setLocalDescription(offer);
-            console.log('🔵 setLocalDescription 完了, signalingState:', peerConnection.signalingState);
-    
-            // signalingState が 'have-local-offer' であることを確認
-            if (peerConnection.signalingState !== 'have-local-offer') {
-                console.error('❌ signalingState が異常:', peerConnection.signalingState);
-                throw new Error('setLocalDescription 後に signalingState が不正');
-            }
-
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
             await peerConnection.setLocalDescription(offer);
 
@@ -527,26 +517,6 @@ async function createPeerConnection(peerId, initiator) {
             const answerData = snapshot.val();
             if (!answerData || !isCurrentPeerConnection(peerId, peerConnection)) return;
             const state = peerConnection.signalingState;
-
-            // stable の場合は Answer を無視せず、再度 Offer を作り直す
-            if (state === 'stable') {
-                console.warn('⚠️ stable 状態で Answer を受信。Offer を再作成します');
-                try {
-                    // 再度 Offer を作成
-                    const offer = await peerConnection.createOffer();
-                    await peerConnection.setLocalDescription(offer);
-                    await set(ref(database, `offers/${localPeerId}/${peerId}`), {
-                        sdp: offer.sdp,
-                        type: 'offer',
-                        timestamp: Date.now()
-                    });
-                    console.log('🔄 Offer を再作成しました');
-                } catch (err) {
-                    console.error('Offer 再作成エラー:', err);
-                }
-                return;
-            }
-            
             if (state === 'have-local-offer' || state === 'have-local-pranswer') {
                 try {
                     await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerData.sdp });
