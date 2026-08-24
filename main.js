@@ -517,6 +517,26 @@ async function createPeerConnection(peerId, initiator) {
             const answerData = snapshot.val();
             if (!answerData || !isCurrentPeerConnection(peerId, peerConnection)) return;
             const state = peerConnection.signalingState;
+
+            // stable の場合は Answer を無視せず、再度 Offer を作り直す
+            if (state === 'stable') {
+                console.warn('⚠️ stable 状態で Answer を受信。Offer を再作成します');
+                try {
+                    // 再度 Offer を作成
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    await set(ref(database, `offers/${localPeerId}/${peerId}`), {
+                        sdp: offer.sdp,
+                        type: 'offer',
+                        timestamp: Date.now()
+                    });
+                    console.log('🔄 Offer を再作成しました');
+                } catch (err) {
+                    console.error('Offer 再作成エラー:', err);
+                }
+                return;
+            }
+            
             if (state === 'have-local-offer' || state === 'have-local-pranswer') {
                 try {
                     await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerData.sdp });
