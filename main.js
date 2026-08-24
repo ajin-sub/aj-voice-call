@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
 import { getDatabase, ref, set, get, remove, onValue, off, onDisconnect } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-database.js";
-// ⬇️ 追加: Firebase Authentication
+// Firebase Authentication
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 
 // Firebase 設定
@@ -18,7 +18,7 @@ const firebaseConfig = {
 // Firebase 初期化
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
-// ⬇️ 追加: Auth インスタンス
+// Auth インスタンス
 const auth = getAuth(app);
 
 // グローバル変数
@@ -110,7 +110,7 @@ async function startCall() {
 
         updateStatus('認証中...', 'connecting');
 
-        // ⬇️ 追加: 匿名認証
+        // 匿名認証
         try {
             await signInAnonymously(auth);
         } catch (authError) {
