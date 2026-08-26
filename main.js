@@ -337,9 +337,10 @@ async function createPeerConnection(peerId, initiator) {
         const appliedIceKeys = new Set();
 
         // ローカルストリーム追加
+        // 2026-06-17 変更: addTrack ではなく addTransceiver を使用して sendrecv に設定
         if (localStream) {
             localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
+                peerConnection.addTransceiver(track, { direction: 'sendrecv' });
             });
         }
 
@@ -389,9 +390,23 @@ async function createPeerConnection(peerId, initiator) {
             });
         };
 
-        // リモートストリームを受け取る
+
+        //2026 -06-17 変更: 処理を標準とレガシーに分岐,その後共通処理を呼ぶ
+        // リモートストリームを受け取る（標準）
         peerConnection.ontrack = (event) => {
-            console.log('リモートストリーム受信:', peerId);
+            console.log('[ontrack] リモートストリーム受信:', peerId);
+            handleRemoteStream(peerId, event.streams[0]);
+        };
+
+        // リモートストリームを受け取る（レガシー / Android 5.1.1 対応）
+        peerConnection.onaddstream = (event) => {
+            console.log('[onaddstream] リモートストリーム受信（レガシー）:', peerId);
+            handleRemoteStream(peerId, event.stream);
+        };
+
+        // 共通処理（上記2つから呼ばれる）
+        function handleRemoteStream(peerId, stream) {
+            if (!stream) return;
             let audioEl = remoteAudios.get(peerId);
             if (!audioEl) {
                 audioEl = document.createElement('audio');
@@ -401,10 +416,8 @@ async function createPeerConnection(peerId, initiator) {
                 document.body.appendChild(audioEl);
                 remoteAudios.set(peerId, audioEl);
             }
-            if (event.streams && event.streams[0]) {
-                audioEl.srcObject = event.streams[0];
-            }
-        };
+            audioEl.srcObject = stream;
+        }
 
         // 接続状態の変化を監視
         peerConnection.onconnectionstatechange = () => {
