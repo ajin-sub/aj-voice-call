@@ -11,8 +11,8 @@ const firebaseConfig = {
     projectId: "aj-voice-call-e157e",
     storageBucket: "aj-voice-call-e157e.firebasestorage.app",
     messagingSenderId: "332396481182",
-    appId: "1:332396481182:web:5482f3b68cd83544b2c98f",
-    measurementId: "G-4EDK28K1PS"
+    appId: "1:332396481182:web:34f968fef4688254b2c98f",
+    measurementId: "G-CBMJYWJW35"
 };
 
 // Firebase 初期化
