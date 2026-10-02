@@ -27,6 +27,7 @@ let peerConnections = new Map();
 let localPeerId = null;
 let localDisplayName = '';
 let isCallActive = false;
+let activeStepNumber = 0;
 const peerNames = new Map();
 const peersRef = ref(database, 'peers');
 const offersRef = ref(database, 'offers');
@@ -87,33 +88,129 @@ function peerRecord() {
 function updateStatus(message, type = 'normal') {
     statusEl.textContent = message;
     statusEl.className = `status ${type}`;
-    console.log(`[${type.toUpperCase()}] ${message}`);
+    console.log(`[STATUS] ${message}`);
+}
+
+function logError(prefix, error) {
+    console.error(prefix, {
+        code: error && error.code,
+        name: error && error.name,
+        message: error && error.message,
+        error: error
+    });
+}
+
+function logStep(number, message) {
+    activeStepNumber = number;
+    const text = `[STEP ${number}] ${message}`;
+    console.log(text);
+    updateStatus(text, 'connecting');
+}
+
+function logEnvironment() {
+    const rtcAvailable = typeof window.RTCPeerConnection !== 'undefined';
+    const rtcPrototype = rtcAvailable ? window.RTCPeerConnection.prototype : null;
+    console.log('[ENV] location.protocol:', location.protocol);
+    console.log('[ENV] location.host:', location.host);
+    console.log('[ENV] navigator.userAgent:', navigator.userAgent);
+    console.log('[ENV] navigator.mediaDevices:', !!navigator.mediaDevices);
+    console.log('[ENV] navigator.mediaDevices.getUserMedia:', !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
+    console.log('[ENV] window.RTCPeerConnection:', rtcAvailable);
+    console.log('[ENV] RTCPeerConnection.prototype.addTrack:', !!(rtcPrototype && rtcPrototype.addTrack));
+    console.log('[ENV] ontrack in RTCPeerConnection.prototype:', !!(rtcPrototype && 'ontrack' in rtcPrototype));
+    console.log('[ENV] navigator.getUserMedia:', !!(navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia));
+}
+
+async function checkNetwork(url) {
+    console.log('[NET] fetch開始:', url);
+    try {
+        const response = await fetch(url);
+        console.log('[NET] fetch成功:', url, 'HTTP', response.status, response.statusText, 'ok=', response.ok);
+    } catch (error) {
+        console.error('[NET] fetch失敗:', url, 'name=', error && error.name, 'message=', error && error.message, 'error=', error);
+    }
+}
+
+async function checkMicrophone() {
+    console.log('[MIC] 診断開始');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.error('[MIC] getUserMediaが利用できません');
+        return;
+    }
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log('[MIC] 診断用マイク取得成功');
+        stream.getTracks().forEach((track) => track.stop());
+        console.log('[MIC] 診断用トラックを停止しました');
+    } catch (error) {
+        console.error('[MIC] 診断用マイク取得失敗:', 'name=', error && error.name, 'message=', error && error.message, 'error=', error);
+    }
+}
+
+function firebaseSet(databaseRef, value, path) {
+    console.log('[FB] set開始:', path);
+    return set(databaseRef, value).then((result) => {
+        console.log('[FB] set成功:', path);
+        return result;
+    }).catch((error) => {
+        logError(`[FB] set失敗: ${path}`, error);
+        throw error;
+    });
+}
+
+function firebaseRemove(databaseRef, path) {
+    console.log('[FB] remove開始:', path);
+    return remove(databaseRef).then((result) => {
+        console.log('[FB] remove成功:', path);
+        return result;
+    }).catch((error) => {
+        logError(`[FB] remove失敗: ${path}`, error);
+        throw error;
+    });
+}
+
+function firebaseGet(databaseRef, path) {
+    console.log('[FB] get開始:', path);
+    return get(databaseRef).then((snapshot) => {
+        console.log('[FB] get成功:', path, 'hasValue=', snapshot.exists());
+        return snapshot;
+    }).catch((error) => {
+        logError(`[FB] get失敗: ${path}`, error);
+        throw error;
+    });
+}
+
+function firebaseOnValue(databaseRef, path, callback) {
+    return onValue(databaseRef, (snapshot) => {
+        const value = snapshot.val();
+        console.log('[FB] onValue受信:', path, 'hasValue=', value !== null && value !== undefined);
+        callback(snapshot);
+    }, (error) => {
+        logError(`[FB] onValue失敗: ${path}`, error);
+    });
 }
 
 async function startCall() {
-    // 本番環境の有無デバッグ処理
-    console.log('=== デバッグ情報 ===');
-    console.log('auth オブジェクト:', auth);
-    console.log('現在のユーザー:', auth.currentUser);
-    console.log('UID:', auth.currentUser?.uid);
-    console.log('===================');
-    
     try {
+        logStep(1, 'startCall開始');
         const name = normalizeDisplayName(displayNameInput.value);
         if (!name) {
-            updateStatus('参加する前に表示名を入力してください', 'error');
+            console.error('[STEP 2] 名前バリデーション失敗: 表示名が空です');
+            updateStatus('[STEP 2] 参加する前に表示名を入力してください', 'error');
             displayNameInput.focus();
             return;
         }
         localDisplayName = name;
         displayNameInput.value = name;
-
-        updateStatus('認証中...', 'connecting');
+        logStep(2, `名前バリデーション完了: ${name}`);
 
         // 匿名認証
+        logStep(3, 'signInAnonymously開始');
         try {
             await signInAnonymously(auth);
+            console.log('[FB] signInAnonymously成功');
         } catch (authError) {
+            logError('[FB] signInAnonymously失敗', authError);
             // 既に認証済みの場合はエラーになるので無視
             if (authError.code !== 'auth/already-initialized') {
                 throw authError;
@@ -125,13 +222,11 @@ async function startCall() {
             throw new Error('認証に失敗しました');
         }
 
-        // ⬇️ 変更: auth.uid を peerId として使用
         localPeerId = user.uid;
-        console.log('認証成功! UID:', localPeerId);
-
-        updateStatus('マイクへのアクセスを許可してください...', 'connecting');
+        logStep(4, `signInAnonymously成功: uid=${localPeerId}`);
 
         // マイクストリーム取得
+        logStep(5, 'getUserMedia開始');
         localStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
@@ -140,42 +235,49 @@ async function startCall() {
             },
             video: false
         });
+        logStep(6, 'getUserMedia成功');
 
         isCallActive = true;
         updateStatus('通話ルームに参加中...', 'connecting');
 
         // Firebase に自分の情報を登録（myPeerRef を作る）
         const myPeerRef = ref(database, `peers/${localPeerId}`);
-        await set(myPeerRef, peerRecord());
+        logStep(7, `peers/${localPeerId} への set開始`);
+        await firebaseSet(myPeerRef, peerRecord(), `peers/${localPeerId}`);
+        logStep(8, 'peers set成功');
 
         // onDisconnect で自動削除（タブ落ち／ブラウザ落ち対策）
+        logStep(9, 'onDisconnect設定');
         try {
             onDisconnectHandle = onDisconnect(myPeerRef);
             await onDisconnectHandle.remove();
+            console.log('[FB] onDisconnect設定成功:', `peers/${localPeerId}`);
         } catch (e) {
-            console.warn('onDisconnect setup failed', e);
+            logError('[FB] onDisconnect設定失敗', e);
             onDisconnectHandle = null;
         }
 
         // heartbeat（定期的に timestamp を更新）
+        logStep(10, 'heartbeat開始');
         heartbeatTimer = setInterval(() => {
-            set(myPeerRef, peerRecord()).catch(e => console.warn('heartbeat failed', e));
+            firebaseSet(myPeerRef, peerRecord(), `peers/${localPeerId}`).catch((e) => logError('[FB] heartbeat失敗', e));
         }, 10000); // 10秒ごと
 
         // 既存の参加者を監視
+        logStep(11, 'monitorPeers開始');
         monitorPeers();
 
         // UI 更新
         startBtn.disabled = true;
         endBtn.disabled = false;
         displayNameInput.disabled = true;
-        updateStatus('通話待機中...接続を待っています', 'connected');
+        updateStatus('[STEP 11] 通話待機中...接続を待っています', 'connected');
 
     } catch (error) {
-        console.error('エラー:', error);
+        logError('[STEP] startCall失敗', error);
         localDisplayName = '';
         displayNameInput.disabled = false;
-        updateStatus(`エラー: ${error.message}`, 'error');
+        updateStatus(`[STEP ${activeStepNumber}] エラー: ${error.name || 'Error'} ${error.code || ''} ${error.message || error}`, 'error');
     }
 }
 
@@ -216,10 +318,10 @@ async function endCall() {
         }
 
         if (localPeerId) {
-            await remove(ref(database, `peers/${localPeerId}`));
-            await remove(ref(database, `offers/${localPeerId}`));
-            await remove(ref(database, `answers/${localPeerId}`));
-            await remove(ref(database, `iceCandidates/${localPeerId}`));
+            await firebaseRemove(ref(database, `peers/${localPeerId}`), `peers/${localPeerId}`);
+            await firebaseRemove(ref(database, `offers/${localPeerId}`), `offers/${localPeerId}`);
+            await firebaseRemove(ref(database, `answers/${localPeerId}`), `answers/${localPeerId}`);
+            await firebaseRemove(ref(database, `iceCandidates/${localPeerId}`), `iceCandidates/${localPeerId}`);
         }
 
         localPeerId = null;
@@ -235,8 +337,8 @@ async function endCall() {
         updateStatus('通話を終了しました', 'normal');
 
     } catch (error) {
-        console.error('エラー:', error);
-        updateStatus(`エラー: ${error.message}`, 'error');
+        logError('[STEP] endCall失敗', error);
+        updateStatus(`エラー: ${error.name || 'Error'} ${error.code || ''} ${error.message || error}`, 'error');
     }
 }
 
@@ -265,7 +367,7 @@ function isCurrentPeerConnection(peerId, peerConnection) {
 }
 
 async function monitorPeers() {
-    onValue(peersRef, async (snapshot) => {
+    firebaseOnValue(peersRef, 'peers', async (snapshot) => {
         if (!isCallActive) return;
 
         const peers = snapshot.val() || {};
@@ -331,6 +433,7 @@ async function createPeerConnection(peerId, initiator) {
     try {
         if (!isCallActive || !localPeerId) return;
 
+        console.log('[RTC] createPeerConnection:', 'peerId=', peerId, 'initiator=', initiator);
         const peerConnection = new RTCPeerConnection(peerConnectionConfig);
         peerConnections.set(peerId, peerConnection);
         const pendingIce = [];
@@ -360,7 +463,7 @@ async function createPeerConnection(peerId, initiator) {
                 await peerConnection.addIceCandidate(ice);
             } catch (error) {
                 if (peerConnection.signalingState !== 'closed') {
-                    console.error('ICE候補追加エラー:', error);
+                    logError(`[RTC] ICE候補追加失敗: peerId=${peerId}`, error);
                 }
             }
         }
@@ -374,24 +477,23 @@ async function createPeerConnection(peerId, initiator) {
 
         // ICE候補を処理
         peerConnection.onicecandidate = (event) => {
-            
-            //デバッグログ用
-            console.log(' ICE候補イベント:', event.candidate ? '候補あり' : 'null（収集完了）');
+            peerConnection.iceCandidateEventCount = (peerConnection.iceCandidateEventCount || 0) + 1;
+            console.log('[RTC] onicecandidate:', 'peerId=', peerId, 'count=', peerConnection.iceCandidateEventCount, 'hasCandidate=', !!event.candidate);
             
             if (!event.candidate) return;
             if (!isCurrentPeerConnection(peerId, peerConnection) || !localPeerId) return;
             const candidateKey = Math.random().toString(36).slice(2);
-            set(ref(database, `iceCandidates/${localPeerId}/${peerId}/${candidateKey}`), {
+            firebaseSet(ref(database, `iceCandidates/${localPeerId}/${peerId}/${candidateKey}`), {
                 candidate: event.candidate.candidate,
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
                 sdpMid: event.candidate.sdpMid,
                 timestamp: Date.now()
-            });
+            }, `iceCandidates/${localPeerId}/${peerId}/${candidateKey}`).catch((error) => logError('[RTC] ICE候補保存失敗', error));
         };
 
         // リモートストリームを受け取る
         peerConnection.ontrack = (event) => {
-            console.log('リモートストリーム受信:', peerId);
+            console.log('[RTC] ontrack:', 'peerId=', peerId, 'hasStream=', !!(event.streams && event.streams[0]));
             let audioEl = remoteAudios.get(peerId);
             if (!audioEl) {
                 audioEl = document.createElement('audio');
@@ -408,8 +510,8 @@ async function createPeerConnection(peerId, initiator) {
 
         // 接続状態の変化を監視
         peerConnection.onconnectionstatechange = () => {
+            console.log('[RTC] onconnectionstatechange:', 'peerId=', peerId, 'state=', peerConnection.connectionState);
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
-            console.log(`ピア ${peerId} の接続状態: ${peerConnection.connectionState}`);
             updatePeerList(Array.from(peerConnections.keys()));
             if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'closed') {
                 cleanupPeer(peerId);
@@ -420,57 +522,59 @@ async function createPeerConnection(peerId, initiator) {
             }
         };
 
-        if (initiator) {
-            // デバッグログ用
-            console.log(' Offer 作成開始 (initiator=true)');
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log('[RTC] oniceconnectionstatechange:', 'peerId=', peerId, 'state=', peerConnection.iceConnectionState);
+        };
+        peerConnection.onsignalingstatechange = () => {
+            console.log('[RTC] onsignalingstatechange:', 'peerId=', peerId, 'state=', peerConnection.signalingState);
+        };
 
+        if (initiator) {
+            console.log('[RTC] createOffer開始:', peerId);
             const offer = await peerConnection.createOffer();
-            
-            // デバッグログ用
-            console.log(' Offer 作成完了');
+            console.log('[RTC] createOffer成功:', peerId);
 
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
+            console.log('[RTC] setLocalDescription(offer)開始:', peerId);
             await peerConnection.setLocalDescription(offer);
-
-            // デバッグログ用
-            console.log(' setLocalDescription 完了');
+            console.log('[RTC] setLocalDescription(offer)成功:', peerId);
 
             if (!isCurrentPeerConnection(peerId, peerConnection) || !localPeerId) return;
 
-            // デバッグログ用
-            console.log(' Firebase に Offer を書き込み中...');
-
-            await set(ref(database, `offers/${localPeerId}/${peerId}`), {
+            await firebaseSet(ref(database, `offers/${localPeerId}/${peerId}`), {
                 sdp: offer.sdp,
                 type: 'offer',
                 timestamp: Date.now()
-            });
-
-            // デバッグログ用
-            console.log(' Offer 書き込み完了！');
+            }, `offers/${localPeerId}/${peerId}`);
         }
 
         // リモートピアからの Offer を監視
         const remoteOfferRef = ref(database, `offers/${peerId}/${localPeerId}`);
-        onValue(remoteOfferRef, async (snapshot) => {
+        firebaseOnValue(remoteOfferRef, `offers/${peerId}/${localPeerId}`, async (snapshot) => {
             const offerData = snapshot.val();
             if (!offerData || !isCurrentPeerConnection(peerId, peerConnection)) return;
 
             const state = peerConnection.signalingState;
             if (state === 'stable') {
                 try {
+                    console.log('[RTC] setRemoteDescription(offer)開始:', peerId);
                     await peerConnection.setRemoteDescription({ type: 'offer', sdp: offerData.sdp });
+                    console.log('[RTC] setRemoteDescription(offer)成功:', peerId);
                     await flushPendingIce();
+                    console.log('[RTC] createAnswer開始:', peerId);
                     const answer = await peerConnection.createAnswer();
+                    console.log('[RTC] createAnswer成功:', peerId);
+                    console.log('[RTC] setLocalDescription(answer)開始:', peerId);
                     await peerConnection.setLocalDescription(answer);
+                    console.log('[RTC] setLocalDescription(answer)成功:', peerId);
                     if (!isCurrentPeerConnection(peerId, peerConnection) || !localPeerId) return;
-                    await set(ref(database, `answers/${localPeerId}/${peerId}`), {
+                    await firebaseSet(ref(database, `answers/${localPeerId}/${peerId}`), {
                         sdp: answer.sdp,
                         type: 'answer',
                         timestamp: Date.now()
-                    });
+                    }, `answers/${localPeerId}/${peerId}`);
                 } catch (err) {
-                    console.error('Offer 処理エラー:', err);
+                    logError('[RTC] Offer処理失敗', err);
                 }
                 return;
             }
@@ -481,7 +585,9 @@ async function createPeerConnection(peerId, initiator) {
                     return;
                 } else {
                     try {
+                        console.log('[RTC] setLocalDescription(rollback)開始:', peerId);
                         await peerConnection.setLocalDescription({ type: 'rollback' });
+                        console.log('[RTC] setLocalDescription(rollback)成功:', peerId);
                     } catch (e) {
                         console.warn('Rollback unsupported or failed, recreating PeerConnection', e);
                         cleanupPeer(peerId);
@@ -494,18 +600,24 @@ async function createPeerConnection(peerId, initiator) {
                         return;
                     }
                     try {
+                        console.log('[RTC] glare setRemoteDescription(offer)開始:', peerId);
                         await peerConnection.setRemoteDescription({ type: 'offer', sdp: offerData.sdp });
+                        console.log('[RTC] glare setRemoteDescription(offer)成功:', peerId);
                         await flushPendingIce();
+                        console.log('[RTC] glare createAnswer開始:', peerId);
                         const answer = await peerConnection.createAnswer();
+                        console.log('[RTC] glare createAnswer成功:', peerId);
+                        console.log('[RTC] glare setLocalDescription(answer)開始:', peerId);
                         await peerConnection.setLocalDescription(answer);
+                        console.log('[RTC] glare setLocalDescription(answer)成功:', peerId);
                         if (!isCurrentPeerConnection(peerId, peerConnection) || !localPeerId) return;
-                        await set(ref(database, `answers/${localPeerId}/${peerId}`), {
+                        await firebaseSet(ref(database, `answers/${localPeerId}/${peerId}`), {
                             sdp: answer.sdp,
                             type: 'answer',
                             timestamp: Date.now()
-                        });
+                        }, `answers/${localPeerId}/${peerId}`);
                     } catch (err) {
-                        console.error('Glare Offer 処理エラー:', err);
+                        logError('[RTC] Glare Offer処理失敗', err);
                     }
                 }
             }
@@ -513,16 +625,18 @@ async function createPeerConnection(peerId, initiator) {
 
         // リモートピアからの Answer を監視
         const remoteAnswerRef = ref(database, `answers/${peerId}/${localPeerId}`);
-        onValue(remoteAnswerRef, async (snapshot) => {
+        firebaseOnValue(remoteAnswerRef, `answers/${peerId}/${localPeerId}`, async (snapshot) => {
             const answerData = snapshot.val();
             if (!answerData || !isCurrentPeerConnection(peerId, peerConnection)) return;
             const state = peerConnection.signalingState;
             if (state === 'have-local-offer' || state === 'have-local-pranswer') {
                 try {
+                    console.log('[RTC] setRemoteDescription(answer)開始:', peerId);
                     await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerData.sdp });
+                    console.log('[RTC] setRemoteDescription(answer)成功:', peerId);
                     await flushPendingIce();
                 } catch (err) {
-                    console.error('Answer 処理エラー:', err);
+                    logError('[RTC] Answer処理失敗', err);
                 }
             } else {
                 console.warn('Ignoring remote answer because signalingState is', state);
@@ -531,7 +645,7 @@ async function createPeerConnection(peerId, initiator) {
 
         // リモートピアからの ICE候補を監視
         const remoteCandidatesRef = ref(database, `iceCandidates/${peerId}/${localPeerId}`);
-        onValue(remoteCandidatesRef, async (snapshot) => {
+        firebaseOnValue(remoteCandidatesRef, `iceCandidates/${peerId}/${localPeerId}`, async (snapshot) => {
             if (!isCurrentPeerConnection(peerId, peerConnection)) return;
             const candidates = snapshot.val() || {};
             for (const candidateKey in candidates) {
@@ -543,8 +657,8 @@ async function createPeerConnection(peerId, initiator) {
         peerListeners.set(peerId, [remoteOfferRef, remoteAnswerRef, remoteCandidatesRef]);
 
     } catch (error) {
-        console.error('PeerConnection 作成エラー:', error);
-        updateStatus(`エラー: ${error.message}`, 'error');
+        logError('[RTC] PeerConnection作成失敗', error);
+        updateStatus(`RTCエラー: ${error.name || 'Error'} ${error.code || ''} ${error.message || error}`, 'error');
     }
 }
 
@@ -554,6 +668,30 @@ window.addEventListener('beforeunload', () => {
         endCall();
     }
 });
+
+window.onerror = function (message, source, line, column, error) {
+    console.error('[GLOBAL] window.onerror:', {
+        message: message,
+        source: source,
+        line: line,
+        column: column,
+        error: error
+    });
+    updateStatus(`[GLOBAL] ${message} (${source || ''}:${line || 0}:${column || 0})`, 'error');
+    return false;
+};
+
+window.onunhandledrejection = function (event) {
+    const reason = event && event.reason;
+    logError('[GLOBAL] unhandledrejection', reason);
+    updateStatus(`[GLOBAL] 未処理Promiseエラー: ${reason && reason.message ? reason.message : reason}`, 'error');
+};
+
+logEnvironment();
+checkNetwork('https://www.gstatic.com/generate_204');
+checkNetwork('https://aj-voice-call-e157e-default-rtdb.firebaseio.com/.json?shallow=true');
+checkNetwork('https://aj-voice-call-e157e.firebaseapp.com/');
+checkMicrophone();
 
 // 初期化完了
 updateStatus('準備完了。「通話開始」をクリック', 'normal');
