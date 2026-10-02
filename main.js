@@ -36,7 +36,7 @@ const iceCandidatesRef = ref(database, 'iceCandidates');
 // onDisconnect ハンドルと heartbeat
 let onDisconnectHandle = null;
 let heartbeatTimer = null;
-const PEER_TTL = 30_000; // 表示する最長寿命（ミリ秒）
+const PEER_TTL = 5 * 60 * 1000; // 表示する最長寿命（ミリ秒）
 
 // マップ：各ピアに紐づくリスナー参照（後で off するため）
 const peerListeners = new Map();
@@ -371,20 +371,34 @@ async function monitorPeers() {
         if (!isCallActive) return;
 
         const peers = snapshot.val() || {};
+
+        // ===== デバッグ：フィルタ前の全ピアを表示 =====
+        console.log('[PEERS-RAW] 全ピア:', Object.keys(peers));
+        console.log('[PEERS-RAW] localPeerId:', localPeerId);
+        const now = Date.now();
+        console.log('[PEERS-RAW] now:', now);
+        for (const [id, data] of Object.entries(peers)) {
+            const age = now - (data.timestamp || 0);
+            console.log(`[PEERS-RAW] id=${id} name=${data && data.name} timestamp=${data && data.timestamp} age(ms)=${age} TTL=${PEER_TTL} passTTL=${age < PEER_TTL} isSelf=${id === localPeerId}`);
+        }
+
         // 自分以外で、かつ最近更新されたピアだけ表示する（PEER_TTL を参照）
         const peerIds = Object.entries(peers)
-          .filter(([id, data]) => id !== localPeerId && (Date.now() - (data.timestamp || 0) < PEER_TTL))
-          .map(([id, data]) => {
-            peerNames.set(id, normalizeDisplayName(data && data.name) || id.slice(0, 8));
-            return id;
-          });
+            .filter(([id, data]) => id !== localPeerId && (Date.now() - (data.timestamp || 0) < PEER_TTL))
+            .map(([id, data]) => {
+                peerNames.set(id, normalizeDisplayName(data && data.name) || id.slice(0, 8));
+                return id;
+            });
+
+        // ===== デバッグ：フィルタ後のピアを表示 =====
+        console.log('[PEERS-FILTERED] 接続対象:', peerIds);
 
         // 接続していない新しいピアに接続
         for (const peerId of peerIds) {
             if (!isCallActive) return;
             if (!peerConnections.has(peerId)) {
-                // deterministic initiator: 比較で一方のみ initiator=true にする
                 const initiator = localPeerId > peerId;
+                console.log('[PEERS-FILTERED] createPeerConnection呼び出し:', peerId, 'initiator=', initiator);
                 await createPeerConnection(peerId, initiator);
             }
         }
@@ -400,7 +414,6 @@ async function monitorPeers() {
             }
         }
 
-        // UI 更新
         updatePeerList(peerIds);
     });
 }
