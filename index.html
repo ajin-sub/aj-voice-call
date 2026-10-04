@@ -94,6 +94,10 @@
             flex-wrap: wrap;
         }
 
+        .call-controls {
+            margin-top: 12px;
+        }
+
         button {
             padding: 12px 24px;
             font-size: 14px;
@@ -163,14 +167,47 @@
 
         .peer-item {
             background: #f5f5f5;
-            padding: 8px 12px;
-            border-radius: 4px;
+            padding: 10px 12px;
+            border-radius: 6px;
             margin-bottom: 6px;
             font-size: 12px;
             color: #666;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .peer-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex: 1 1 100%;
+        }
+
+        .volume-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .volume-control label {
+            white-space: nowrap;
+        }
+
+        .volume-slider {
+            flex: 1;
+            min-width: 0;
+            accent-color: #667eea;
+        }
+
+        .volume-value {
+            width: 36px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
         }
 
         .peer-status {
@@ -196,6 +233,10 @@
             .controls {
                 gap: 8px;
             }
+
+            .volume-control {
+                gap: 6px;
+            }
         }
     </style>
 </head>
@@ -212,6 +253,10 @@
         <div class="controls">
             <button class="btn-primary" id="startBtn">通話開始</button>
             <button class="btn-danger" id="endBtn" disabled>通話終了</button>
+        </div>
+        <div class="controls call-controls">
+            <button class="btn-primary" id="muteBtn" disabled>ミュート</button>
+            <button class="btn-primary" id="muteAllBtn" disabled>避難！！</button>
         </div>
 
         <div class="peer-list" id="peerList" style="display: none;">

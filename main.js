@@ -38,6 +38,9 @@ let activeStepNumber = 0;
 const creatingPeers = new Set();
 let peerConnectionGeneration = 0;
 let peersUnsub = null;
+// [FEATURE 1] 個別ミュートと全ミュートの状態
+let isMuted = false;
+let isAllMuted = false;
 const peerNames = new Map();
 const peersRef = ref(database, 'peers');
 // onDisconnect ハンドルと heartbeat
@@ -49,6 +52,11 @@ const PEER_TTL = 5 * 60 * 1000; // 表示する最長寿命（ミリ秒）
 const peerListeners = new Map();
 // マップ：リモート音声用の audio 要素
 const remoteAudios = new Map();
+// [FEATURE 3] peer ごとの音量処理と音量設定（退出後の再接続でも値を保持）
+const peerGains = new Map();
+const peerAudioSources = new Map();
+const peerVolumes = new Map();
+let audioContext = null;
 
 // [TASK 1] TURN は URL / username / credential がそろった場合だけ追加する
 function buildIceServers() {
@@ -74,10 +82,14 @@ const endBtn = document.getElementById('endBtn');
 const peerListEl = document.getElementById('peerList');
 const peersEl = document.getElementById('peers');
 const displayNameInput = document.getElementById('displayName');
+const muteBtn = document.getElementById('muteBtn');
+const muteAllBtn = document.getElementById('muteAllBtn');
 
 // イベントリスナー
 startBtn.addEventListener('click', startCall);
 endBtn.addEventListener('click', endCall);
+muteBtn.addEventListener('click', () => setLocalMute(!isMuted));
+muteAllBtn.addEventListener('click', () => setAllMute(!isAllMuted));
 displayNameInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !startBtn.disabled) {
         startCall();
@@ -91,6 +103,119 @@ function normalizeDisplayName(raw) {
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 20);
+}
+
+// [FEATURE 3] 通話開始ボタンのユーザー操作中に AudioContext を作成・再開する
+async function initAudioContext() {
+    if (!audioContext) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) {
+            console.error('[AUDIO] Web Audio API が利用できません');
+            return;
+        }
+        audioContext = new AudioContextClass();
+    }
+
+    if (audioContext.state === 'suspended') {
+        try {
+            await audioContext.resume();
+        } catch (error) {
+            logError('[AUDIO] AudioContext再開失敗', error);
+        }
+    }
+}
+
+// [FEATURE 1] 個別ミュート状態を保持し、全ミュート中はトラックを有効化しない
+function setLocalMute(muted) {
+    isMuted = muted;
+    if (localStream) {
+        localStream.getAudioTracks().forEach((track) => {
+            track.enabled = !isMuted && !isAllMuted;
+        });
+    }
+    muteBtn.textContent = isMuted ? 'ミュート解除' : 'ミュート';
+    muteBtn.classList.toggle('btn-danger', isMuted);
+    muteBtn.classList.toggle('btn-primary', !isMuted);
+}
+
+// [FEATURE 2] 個別ミュート状態を保持したまま、マイクと相手音声を一括で切り替える
+function setAllMute(muted) {
+    isAllMuted = muted;
+    if (localStream) {
+        localStream.getAudioTracks().forEach((track) => {
+            track.enabled = !isMuted && !isAllMuted;
+        });
+    }
+    for (const [peerId, audioEl] of remoteAudios) {
+        audioEl.muted = isAllMuted;
+        const gainNode = peerGains.get(peerId);
+        if (gainNode) {
+            gainNode.gain.value = isAllMuted ? 0 : (peerVolumes.get(peerId) || 0) / 100;
+        }
+    }
+    muteAllBtn.textContent = isAllMuted ? '全ミュート解除' : '全ミュート';
+    muteAllBtn.classList.toggle('btn-danger', isAllMuted);
+    muteAllBtn.classList.toggle('btn-primary', !isAllMuted);
+}
+
+// [FEATURE 3] 音量スライダーの値（0〜200）を GainNode に反映する
+function applyPeerVolume(peerId, value) {
+    const volume = Math.max(0, Math.min(200, Math.round(Number(value))));
+    peerVolumes.set(peerId, volume);
+    const gainNode = peerGains.get(peerId);
+    if (gainNode) {
+        gainNode.gain.value = isAllMuted ? 0 : volume / 100;
+    }
+    updatePeerVolumeUI(peerId, volume);
+}
+
+// [FEATURE 3] peer の audio 要素を AudioContext の gain 経由で再生する
+function attachGainToAudio(peerId, audioEl) {
+    audioEl.muted = isAllMuted;
+    const volume = peerVolumes.has(peerId) ? peerVolumes.get(peerId) : 100;
+    peerVolumes.set(peerId, volume);
+
+    if (!audioContext || peerGains.has(peerId)) {
+        updatePeerVolumeUI(peerId, volume);
+        return;
+    }
+
+    try {
+        const source = audioContext.createMediaElementSource(audioEl);
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = volume / 100;
+        source.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        peerAudioSources.set(peerId, source);
+        peerGains.set(peerId, gainNode);
+    } catch (error) {
+        logError(`[AUDIO] GainNode接続失敗: peerId=${peerId}`, error);
+    }
+    updatePeerVolumeUI(peerId, volume);
+}
+
+// [FEATURE 3] peer 退出時に source / gain の接続を解除する
+function detachGainFromPeer(peerId) {
+    const source = peerAudioSources.get(peerId);
+    if (source) {
+        source.disconnect();
+        peerAudioSources.delete(peerId);
+    }
+    const gainNode = peerGains.get(peerId);
+    if (gainNode) {
+        gainNode.disconnect();
+        peerGains.delete(peerId);
+    }
+}
+
+// [FEATURE 3] 一覧のスライダーと数値表示を更新する
+function updatePeerVolumeUI(peerId, value) {
+    const item = Array.from(peersEl.children).find((element) => element.dataset.peerId === peerId);
+    if (!item) return;
+    const slider = item.querySelector('.volume-slider');
+    const valueLabel = item.querySelector('.volume-value');
+    if (slider && slider.value !== String(value)) slider.value = String(value);
+    if (valueLabel) valueLabel.textContent = String(value);
 }
 
 function peerRecord() {
@@ -233,6 +358,9 @@ async function startCall() {
         displayNameInput.value = name;
         logStep(2, `名前バリデーション完了: ${name}`);
 
+        // [FEATURE 3] ユーザー操作中に AudioContext を初期化する
+        await initAudioContext();
+
         // 匿名認証
         logStep(3, 'signInAnonymously開始');
         let authenticatedUser = null;
@@ -305,6 +433,11 @@ async function startCall() {
         startBtn.disabled = true;
         endBtn.disabled = false;
         displayNameInput.disabled = true;
+        // [FEATURE 1/2] 通話中だけミュート操作を有効にし、開始時は解除状態にする
+        setLocalMute(false);
+        setAllMute(false);
+        muteBtn.disabled = false;
+        muteAllBtn.disabled = false;
         updateStatus('[STEP 11] 通話待機中...接続を待っています', 'connected');
 
     } catch (error) {
@@ -348,6 +481,27 @@ async function endCall() {
         if (localStream) {
             localStream.getTracks().forEach(track => track.stop());
             localStream = null;
+        }
+
+        // [FEATURE 1/2] 通話終了時にミュート状態とボタンをリセットする
+        isMuted = false;
+        isAllMuted = false;
+        muteBtn.textContent = 'ミュート';
+        muteBtn.classList.remove('btn-danger');
+        muteBtn.classList.add('btn-primary');
+        muteBtn.disabled = true;
+        muteAllBtn.textContent = '全ミュート';
+        muteAllBtn.classList.remove('btn-danger');
+        muteAllBtn.classList.add('btn-primary');
+        muteAllBtn.disabled = true;
+
+        // [FEATURE 3] AudioContext を閉じ、GainNode を解放する
+        for (const peerId of Array.from(peerGains.keys())) {
+            detachGainFromPeer(peerId);
+        }
+        if (audioContext) {
+            try { await audioContext.close(); } catch (error) { logError('[AUDIO] AudioContext終了失敗', error); }
+            audioContext = null;
         }
 
         if (onDisconnectHandle) {
@@ -401,6 +555,8 @@ function cleanupPeer(peerId) {
         audioEl.remove();
         remoteAudios.delete(peerId);
     }
+    // [FEATURE 3] peer 退出時に音量処理ノードを破棄する
+    detachGainFromPeer(peerId);
 }
 
 function isCurrentPeerConnection(peerId, peerConnection) {
@@ -480,12 +636,36 @@ function updatePeerList(peerIds) {
         const status = pc && pc.connectionState === 'connected' ? '接続済み' : '接続中...';
         const item = document.createElement('div');
         item.className = 'peer-item';
+        item.dataset.peerId = peerId;
         const nameEl = document.createElement('span');
         nameEl.textContent = peerNames.get(peerId) || peerId.slice(0, 8);
         const connectionStatusEl = document.createElement('span');
         connectionStatusEl.className = 'peer-status';
         connectionStatusEl.textContent = status;
-        item.append(nameEl, connectionStatusEl);
+        const peerInfo = document.createElement('div');
+        peerInfo.className = 'peer-info';
+        peerInfo.append(nameEl, connectionStatusEl);
+
+        // [FEATURE 3] peer ごとの音量スライダーと数値表示
+        const volumeControl = document.createElement('div');
+        volumeControl.className = 'volume-control';
+        const volumeLabel = document.createElement('label');
+        volumeLabel.textContent = '音量';
+        const volumeSlider = document.createElement('input');
+        volumeSlider.type = 'range';
+        volumeSlider.className = 'volume-slider';
+        volumeSlider.min = '0';
+        volumeSlider.max = '200';
+        volumeSlider.step = '1';
+        const volume = peerVolumes.has(peerId) ? peerVolumes.get(peerId) : 100;
+        volumeSlider.value = String(volume);
+        const volumeValue = document.createElement('span');
+        volumeValue.className = 'volume-value';
+        volumeValue.textContent = String(volume);
+        volumeSlider.addEventListener('input', () => applyPeerVolume(peerId, volumeSlider.value));
+        volumeControl.append(volumeLabel, volumeSlider, volumeValue);
+
+        item.append(peerInfo, volumeControl);
         peersEl.appendChild(item);
     }
 }
@@ -594,6 +774,8 @@ async function createPeerConnection(peerId, initiator) {
                 document.body.appendChild(audioEl);
                 remoteAudios.set(peerId, audioEl);
             }
+            // [FEATURE 2/3] 全ミュート状態を適用し、GainNode 経由で個別音量を制御する
+            attachGainToAudio(peerId, audioEl);
             if (event.streams && event.streams[0]) {
                 audioEl.srcObject = event.streams[0];
             }
