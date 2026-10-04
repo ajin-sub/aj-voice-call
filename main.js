@@ -38,7 +38,7 @@ let activeStepNumber = 0;
 const creatingPeers = new Set();
 let peerConnectionGeneration = 0;
 let peersUnsub = null;
-// [FEATURE 1] 個別ミュートと全ミュートの状態
+// [FEATURE 1] 個別ミュートと避難！！の状態
 let isMuted = false;
 let isAllMuted = false;
 const peerNames = new Map();
@@ -125,7 +125,7 @@ async function initAudioContext() {
     }
 }
 
-// [FEATURE 1] 個別ミュート状態を保持し、全ミュート中はトラックを有効化しない
+// [FEATURE 1] 個別ミュート状態を保持し、避難！！中はトラックを有効化しない
 function setLocalMute(muted) {
     isMuted = muted;
     if (localStream) {
@@ -153,7 +153,7 @@ function setAllMute(muted) {
             gainNode.gain.value = isAllMuted ? 0 : (peerVolumes.get(peerId) || 0) / 100;
         }
     }
-    muteAllBtn.textContent = isAllMuted ? '全ミュート解除' : '全ミュート';
+    muteAllBtn.textContent = isAllMuted ? '避難！！解除' : '避難！！';
     muteAllBtn.classList.toggle('btn-danger', isAllMuted);
     muteAllBtn.classList.toggle('btn-primary', !isAllMuted);
 }
@@ -490,7 +490,7 @@ async function endCall() {
         muteBtn.classList.remove('btn-danger');
         muteBtn.classList.add('btn-primary');
         muteBtn.disabled = true;
-        muteAllBtn.textContent = '全ミュート';
+        muteAllBtn.textContent = '避難！！';
         muteAllBtn.classList.remove('btn-danger');
         muteAllBtn.classList.add('btn-primary');
         muteAllBtn.disabled = true;
@@ -774,7 +774,7 @@ async function createPeerConnection(peerId, initiator) {
                 document.body.appendChild(audioEl);
                 remoteAudios.set(peerId, audioEl);
             }
-            // [FEATURE 2/3] 全ミュート状態を適用し、GainNode 経由で個別音量を制御する
+            // [FEATURE 2/3] 避難！！状態を適用し、GainNode 経由で個別音量を制御する
             attachGainToAudio(peerId, audioEl);
             if (event.streams && event.streams[0]) {
                 audioEl.srcObject = event.streams[0];
